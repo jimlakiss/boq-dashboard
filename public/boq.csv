@@ -1,0 +1,15 @@
+CODE,DESCRIPTION,QTY,UNIT,RATE,SUBTOTAL,MARKUP,TOTAL
+06.CO.0.0.0.0.0,CONCRETE,,,,,,
+06.CO.0.1.0.0.0,Footings,,,,,,
+06.CO.0.1.2.0.0,Pile Caps,,,,,,
+06.CO.0.1.2.0.0.R0,Pile Cap – Labour only,10,m³,0,0,0%,0
+06.CO.0.1.2.0.0.R2,Pile Cap – 20MPa Concrete,42.5,m³,136.5,5801.25,5%,6091.31
+06.CO.0.1.2.0.0.R3,Pile Cap – 25MPa Concrete,12,m³,150,1800,5%,1890
+07.FW.0.0.0.0.0,FORMWORK,,,,,,
+07.FW.0.2.0.0.0,Basements,,,,,,
+07.FW.0.2.0.0.0.R1,Basement Wall Formwork,120,m²,85,10200,7%,10914
+08.RE.0.0.0.0.0,REINFORCEMENT,,,,,,
+08.RE.0.1.0.0.0,Footings Reinforcement,,,,,,
+08.RE.0.1.0.0.0.R1,Rebar Supply & Fix,3.2,t,2100,6720,5%,7056
+08.RE.0.2.1.0.0,Footings,,,,,,
+08.RE.0.2.1.0.0.R0,Helical Bars To Footings - Labour Only Excludes material & plant,1,t,3500,3500,,3500

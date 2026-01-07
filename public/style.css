@@ -1,0 +1,14 @@
+/* Pure Tailwind for styling; this is only structural alignment */
+.boq-grid {
+  display: grid;
+  grid-template-columns:
+    180px   /* CODE */
+    1fr     /* DESCRIPTION */
+    90px    /* QTY */
+    80px    /* UNIT */
+    110px   /* RATE */
+    130px   /* SUBTOTAL */
+    90px    /* MARKUP */
+    130px;  /* TOTAL */
+  align-items: center;
+}
