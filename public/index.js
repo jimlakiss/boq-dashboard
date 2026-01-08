@@ -14,6 +14,9 @@
  * NO BOOTSTRAP (none referenced/used)
  *************************************************************/
 
+console.log("✅ BOQ index.js loaded:", new Date().toISOString());
+document.documentElement.style.setProperty("outline", "6px solid magenta", "important");
+
 /* ================= COLUMN MAP ================= */
 const COL = {
   CODE: 0,
