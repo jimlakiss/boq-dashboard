@@ -1,21 +1,18 @@
 /*************************************************************
  * BOQ CSV (AUTO-LOAD) + HIERARCHY + COLLAPSE + ROLLUP ENGINE
  *
- * REQUIRED FIXES:
- * 1) Heading emphasis MUST show (even if your CSS uses !important):
- *    - Level 1 (trade roots): bold + underline + lighter grey text + subtle grey row shading
- *    - Level 2+ headings (non-rate): bold
- *    - Rates: unchanged (light blue background)
+ * REQUIRED FIXES INCLUDED:
+ * 1) Level styling that ACTUALLY shows:
+ *    - Level 1 (root per trade): bold + underline + lighter grey text + subtle grey shading
+ *    - Level 2+ headings (non-rates): bold
+ *    - Rates: unchanged (light blue)
  *
- * 2) Rollups MUST include:
+ * 2) Rollups include:
  *    - Rate rows (.R#)
- *    - Non-rate TRUE LEAF rows carrying quantities (fixes "Trench mesh" style cases)
+ *    - Non-rate LEAF rows that carry quantities (fixes "Trench Mesh" not rolling up)
  *
- * NO BOOTSTRAP (none referenced/used)
+ * NO BOOTSTRAP (none used here)
  *************************************************************/
-
-console.log("✅ BOQ index.js loaded:", new Date().toISOString());
-document.documentElement.style.setProperty("outline", "6px solid magenta", "important");
 
 /* ================= COLUMN MAP ================= */
 const COL = {
@@ -31,7 +28,8 @@ const COL = {
 
 /* ================= CONFIG ================= */
 const INDENT_PX = 14;           // ~3–5mm
-const AUTO_CSV_PATH = "boq.csv";
+// const AUTO_CSV_PATH = "boq.csv";
+const AUTO_CSV_PATH = "./boq.csv";
 
 /* ================= CODE UTILITIES ================= */
 function isRate(code) {
@@ -74,8 +72,16 @@ function covers(parentCode, childCode) {
 function isDescendant(parentCode, childCode) {
   if (!parentCode || !childCode) return false;
   if (stripRate(parentCode) === stripRate(childCode)) return false;
-  if (isRate(childCode)) return false;
+  if (isRate(childCode)) return false; // rates handled via base
   return covers(parentCode, childCode);
+}
+
+function isAttachedRate(parentCode, childCode) {
+  return (
+    isRate(childCode) &&
+    tradePrefix(parentCode) === tradePrefix(childCode) &&
+    stripRate(childCode) === stripRate(parentCode)
+  );
 }
 
 /* ================= DOM HELPERS ================= */
@@ -95,24 +101,23 @@ function parseMoney(v) {
 }
 
 function formatMoney(n) {
-  // If you prefer blank instead of $0.00, adjust here (not touched otherwise).
   return "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 /* ============================================================
- * HIERARCHY INDEX
+ * HIERARCHY INDEX (unchanged parent selection approach)
  * Parent = most specific PRIOR row that covers the child
- * Rates attach to their base code.
+ * Rates attach to their base code
  * ============================================================ */
 function buildHierarchyIndex(allRows) {
   const nodes = allRows
-    .map((r, idx) => ({ code: r.dataset.code, idx }))
+    .map((r, idx) => ({ el: r, code: r.dataset.code, idx }))
     .filter(x => x.code && !isRate(x.code));
 
   const parentOf = new Map();        // code -> parentCode|null
-  const childrenOf = new Map();      // code -> [child codes] (non-rate)
-  const rateChildrenOf = new Map();  // baseCode -> [rate codes]
-  const depthOf = new Map();         // code -> UI depth
+  const childrenOf = new Map();      // code -> [child codes]
+  const rateChildrenOf = new Map();  // code -> [rate codes]
+  const depthOf = new Map();         // code -> UI depth (0 = Level 1 per trade)
 
   for (const n of nodes) {
     childrenOf.set(n.code, []);
@@ -125,7 +130,7 @@ function buildHierarchyIndex(allRows) {
     let bestIdx = -1;
 
     for (const p of nodes) {
-      if (p.idx >= n.idx) break; // prior only
+      if (p.idx >= n.idx) break; // prior rows only
       if (!covers(p.code, n.code)) continue;
 
       const spec = nonZeroCount(p.code);
@@ -144,16 +149,16 @@ function buildHierarchyIndex(allRows) {
     }
   }
 
-  // attach rates
+  // Attach rate rows to base nodes
   for (const r of allRows) {
-    const code = r.dataset.code;
-    if (!code || !isRate(code)) continue;
-    const base = stripRate(code);
+    const c = r.dataset.code;
+    if (!c || !isRate(c)) continue;
+    const base = stripRate(c);
     if (!rateChildrenOf.has(base)) rateChildrenOf.set(base, []);
-    rateChildrenOf.get(base).push(code);
+    rateChildrenOf.get(base).push(c);
   }
 
-  // compute depth by parent chain
+  // Compute UI depth
   function computeDepth(code) {
     if (depthOf.has(code)) return depthOf.get(code);
     const p = parentOf.get(code);
@@ -166,29 +171,18 @@ function buildHierarchyIndex(allRows) {
   return { parentOf, childrenOf, rateChildrenOf, depthOf };
 }
 
+/* ================= CHILD CHECK (used for leaf rollups) ================= */
 function hasChildren(code, hierarchy) {
   if (!code || isRate(code)) return false;
   const { childrenOf, rateChildrenOf } = hierarchy;
   return (childrenOf.get(code)?.length || 0) > 0 || (rateChildrenOf.get(code)?.length || 0) > 0;
 }
 
-/**
- * TRUE LEAF = no non-rate children AND no attached rates
- * (Only these non-rate rows should contribute upward directly.)
- */
-function isTrueLeafNonRate(code, hierarchy) {
-  if (!code || isRate(code)) return false;
-  const { childrenOf, rateChildrenOf } = hierarchy;
-  const hasNonRateKids = (childrenOf.get(code)?.length || 0) > 0;
-  const hasRates = (rateChildrenOf.get(code)?.length || 0) > 0;
-  return !hasNonRateKids && !hasRates;
-}
-
 /* ============================================================
  * ROLLUPS (FIXED)
  * Include:
- * - Rate rows always
- * - Non-rate TRUE LEAF rows that carry quantities
+ * - Rate rows
+ * - Non-rate LEAF rows with values (fixes "Trench Mesh" issue)
  * ============================================================ */
 function recomputeAllRollups(allRows, hierarchy) {
   const nodes = allRows.filter(r => r.dataset.code && !isRate(r.dataset.code));
@@ -201,13 +195,18 @@ function recomputeAllRollups(allRows, hierarchy) {
       const rCode = r.dataset.code;
       if (!rCode) continue;
 
-      const contribute =
-        isRate(rCode) ||
-        (isTrueLeafNonRate(rCode, hierarchy)); // <- key fix
+      const isRateRow = isRate(rCode);
 
-      if (!contribute) continue;
+      // Non-rate leaf items should roll up too
+      const isLeafNonRate = !isRateRow && !hasChildren(rCode, hierarchy);
 
-      const base = stripRate(rCode); // for non-rate this is itself
+      if (!isRateRow && !isLeafNonRate) continue;
+
+      const base = stripRate(rCode); // rates base to their parent; non-rates unchanged
+
+      // Contributes if:
+      // - the base equals this node, or
+      // - the base is a descendant under this node
       if (base === nCode || isDescendant(nCode, base)) {
         qty += parseNumber(r.children[COL.QTY]?.textContent || 0);
         subtotal += parseMoney(r.children[COL.SUBTOTAL]?.textContent || 0);
@@ -252,7 +251,7 @@ function showImmediateChildren(code, allRows, hierarchy) {
     if (el) el.style.display = "grid";
   });
 
-  // show only rates directly attached to this node
+  // show only attached rates (direct)
   (rateChildrenOf.get(code) || []).forEach(rc => {
     const el = allRows.find(r => r.dataset.code === rc);
     if (el) el.style.display = "grid";
@@ -260,52 +259,45 @@ function showImmediateChildren(code, allRows, hierarchy) {
 }
 
 /* ============================================================
- * PRESENTATION (GUARANTEED, even against external CSS !important)
- * Apply AFTER rebuilding CODE cell.
- *
- * Level 1: bold + underline + slate grey + subtle grey row shading
- * Level 2+: bold (desc only)
- * Rates: unchanged
+ * PRESENTATION (GUARANTEED)
+ * Apply styles AFTER the CODE cell is rebuilt.
  * ============================================================ */
 function applyLevelPresentation(rowEl, code, codeCell, descCell, hierarchy) {
-  // reset to avoid stacking
-  rowEl.style.removeProperty("background-color");
+  // Reset (idempotent)
+  rowEl.style.backgroundColor = "";
+  if (codeCell) {
+    codeCell.style.color = "";
+    codeCell.style.fontWeight = "";
+    codeCell.style.textDecoration = "";
+  }
+  if (descCell) {
+    descCell.style.color = "";
+    descCell.style.fontWeight = "";
+    descCell.style.textDecoration = "";
+  }
 
-  // Rates unchanged
+  // Rates: leave as-is (blue pill background already applied in renderFromCSV)
   if (isRate(code)) return;
 
   const depth = hierarchy.depthOf.get(code) || 0;
 
   if (depth === 0) {
-    // subtle row shading
-    rowEl.style.setProperty("background-color", "#f1f5f9", "important"); // slate-100
-
-    // CODE cell (and its label) - grey, bold, underline
+    // Level 1: bold + underline + lighter grey + subtle shading
+    rowEl.style.backgroundColor = "#f1f5f9"; // slate-100 (subtle shading)
     if (codeCell) {
-      codeCell.style.setProperty("color", "#64748b", "important"); // slate-500
-      codeCell.style.setProperty("font-weight", "700", "important");
-      codeCell.style.setProperty("text-decoration", "underline", "important");
-
-      // also force the inner label span (some CSS targets spans)
-      const labelSpan = codeCell.querySelector("span:last-child");
-      if (labelSpan) {
-        labelSpan.style.setProperty("color", "#64748b", "important");
-        labelSpan.style.setProperty("font-weight", "700", "important");
-        labelSpan.style.setProperty("text-decoration", "underline", "important");
-      }
+      codeCell.style.color = "#64748b"; // slate-500
+      codeCell.style.fontWeight = "700";
+      codeCell.style.textDecoration = "underline";
     }
-
-    // DESCRIPTION cell - same emphasis
     if (descCell) {
-      descCell.style.setProperty("color", "#64748b", "important");
-      descCell.style.setProperty("font-weight", "700", "important");
-      descCell.style.setProperty("text-decoration", "underline", "important");
+      descCell.style.color = "#64748b";
+      descCell.style.fontWeight = "700";
+      descCell.style.textDecoration = "underline";
     }
   } else {
-    // Level 2+ headings: bold description
+    // Level 2+: bold headings (non-rates)
     if (descCell) {
-      descCell.style.setProperty("font-weight", "700", "important");
-      descCell.style.removeProperty("text-decoration"); // leave default
+      descCell.style.fontWeight = "700";
     }
   }
 }
@@ -322,17 +314,17 @@ function initBoqUI(allRows, hierarchy) {
     const descCell = r.children[COL.DESC];
     if (!codeCell || !descCell) continue;
 
-    // indentation (unchanged intent)
+    // Indentation (unchanged intent)
     if (!isRate(code)) {
       const d = depthOf.get(code) || 0;
-      descCell.style.setProperty("padding-left", `${d * INDENT_PX}px`, "important");
+      descCell.style.paddingLeft = `${d * INDENT_PX}px`;
     } else {
       const base = stripRate(code);
       const pd = depthOf.get(base) || 0;
-      descCell.style.setProperty("padding-left", `${(pd + 1) * INDENT_PX}px`, "important");
+      descCell.style.paddingLeft = `${(pd + 1) * INDENT_PX}px`;
     }
 
-    // rebuild CODE cell (existing behaviour)
+    // Rebuild CODE cell (existing behaviour)
     const codeLabel = code;
     codeCell.innerHTML = "";
     const wrap = document.createElement("div");
@@ -344,7 +336,6 @@ function initBoqUI(allRows, hierarchy) {
       icon.className = "text-slate-500";
       wrap.appendChild(icon);
 
-      // keep clickable styling
       codeCell.classList.add("cursor-pointer", "text-blue-700");
 
       codeCell.addEventListener("click", () => {
@@ -368,7 +359,7 @@ function initBoqUI(allRows, hierarchy) {
     wrap.appendChild(label);
     codeCell.appendChild(wrap);
 
-    // ✅ Apply presentation AFTER rebuild (and with !important)
+    // ✅ APPLY PRESENTATION AFTER rebuild (THIS is what was missing)
     applyLevelPresentation(r, code, codeCell, descCell, hierarchy);
   }
 }
@@ -406,7 +397,7 @@ function renderFromCSV(data) {
     el.className = "boq-row boq-grid px-3 py-2";
     el.dataset.code = row.CODE;
 
-    // Rates stay light blue
+    // Rate rows stay light blue
     if (isRate(row.CODE)) {
       el.classList.add("bg-sky-100", "mx-2", "my-1", "rounded-md");
     }
@@ -426,7 +417,7 @@ function renderFromCSV(data) {
   });
 }
 
-/* ================= STARTUP ================= */
+/* ================= BOOTSTRAP (NO BOOTSTRAP USED) ================= */
 document.addEventListener("DOMContentLoaded", async () => {
   const res = await fetch(AUTO_CSV_PATH, { cache: "no-store" });
   const text = await res.text();
@@ -438,7 +429,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const all = rows();
   const hierarchy = buildHierarchyIndex(all);
 
-  // initial visibility: show only root headings; hide all others
+  // Initial visibility: show only root (parent null) non-rate rows; hide all others
   for (const r of all) {
     const code = r.dataset.code;
     if (!code) continue;
