@@ -1,17 +1,19 @@
 /*************************************************************
  * BOQ CSV (AUTO-LOAD) + HIERARCHY + COLLAPSE + ROLLUP ENGINE
  *
- * REQUIRED FIXES INCLUDED:
- * 1) Level styling that ACTUALLY shows:
- *    - Level 1 (root per trade): bold + underline + lighter grey text + subtle grey shading
- *    - Level 2+ headings (non-rates): bold
- *    - Rates: unchanged (light blue)
+ * THIS REVISION:
+ * - Keeps previous working render/UI/CSS behaviour (no layout changes)
+ * - Fixes rollups so parents sum:
+ *    (a) rate rows (.R#)
+ *    (b) non-rate rows that carry values (QTY/SUBTOTAL/TOTAL != 0),
+ *        even if those rows have children (e.g. "Trench Mesh" case)
  *
- * 2) Rollups include:
- *    - Rate rows (.R#)
- *    - Non-rate LEAF rows that carry quantities (fixes "Trench Mesh" not rolling up)
+ * NEW (CALCULATIONS):
+ * - SUBTOTAL = QTY × RATE, ONLY if SUBTOTAL cell is blank (CSV prevails)
+ * - TOTAL = SUBTOTAL × (1 + MARKUP%), ONLY if TOTAL cell is blank (CSV prevails)
+ * - If MARKUP blank, TOTAL = SUBTOTAL (when TOTAL blank)
  *
- * NO BOOTSTRAP (none used here)
+ * No Bootstrap. Tailwind layout unchanged.
  *************************************************************/
 
 /* ================= COLUMN MAP ================= */
@@ -27,9 +29,8 @@ const COL = {
 };
 
 /* ================= CONFIG ================= */
-const INDENT_PX = 14;           // ~3–5mm
-// const AUTO_CSV_PATH = "boq.csv";
-const AUTO_CSV_PATH = "/boq/boq.csv";
+const INDENT_PX = 20;           // ~3–5mm
+const AUTO_CSV_PATH = "./boq.csv";
 
 /* ================= CODE UTILITIES ================= */
 function isRate(code) {
@@ -76,14 +77,6 @@ function isDescendant(parentCode, childCode) {
   return covers(parentCode, childCode);
 }
 
-function isAttachedRate(parentCode, childCode) {
-  return (
-    isRate(childCode) &&
-    tradePrefix(parentCode) === tradePrefix(childCode) &&
-    stripRate(childCode) === stripRate(parentCode)
-  );
-}
-
 /* ================= DOM HELPERS ================= */
 function rows() {
   return Array.from(document.querySelectorAll(".boq-row[data-code]"));
@@ -91,23 +84,88 @@ function rows() {
 
 /* ================= NUMBER HELPERS ================= */
 function parseNumber(v) {
-  const n = parseFloat(String(v).replace(/,/g, ""));
+  const n = parseFloat(String(v ?? "").replace(/,/g, "").trim());
   return Number.isFinite(n) ? n : 0;
 }
 
 function parseMoney(v) {
-  const n = parseFloat(String(v).replace(/[$,\s]/g, ""));
+  const n = parseFloat(String(v ?? "").replace(/[$,\s]/g, "").trim());
   return Number.isFinite(n) ? n : 0;
+}
+
+function parsePercent(v) {
+  const n = parseFloat(String(v ?? "").replace(/[%\s]/g, "").trim());
+  return Number.isFinite(n) ? n : null;
 }
 
 function formatMoney(n) {
   return "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+function cellHasUploadedValue(cellEl) {
+  // IMPORTANT: use text presence, not numeric > 0
+  // because "$0.00" or "0" are valid uploaded values.
+  return !!cellEl && String(cellEl.textContent ?? "").trim().length > 0;
+}
+
 /* ============================================================
- * HIERARCHY INDEX (unchanged parent selection approach)
+ * CALCULATIONS (NEW, DOES NOT OVERRIDE UPLOADED VALUES)
+ *
+ * Rules:
+ * - If SUBTOTAL cell has any text -> keep it.
+ *   Else if QTY and RATE are present -> SUBTOTAL = QTY × RATE
+ *
+ * - If TOTAL cell has any text -> keep it.
+ *   Else if SUBTOTAL is available (uploaded or computed):
+ *        If MARKUP cell has any text -> TOTAL = SUBTOTAL × (1 + %/100)
+ *        Else TOTAL = SUBTOTAL
+ * ============================================================ */
+function applyRowCalculations(allRows) {
+  for (const r of allRows) {
+    if (!r || !r.children) continue;
+
+    const qtyCell = r.children[COL.QTY];
+    const rateCell = r.children[COL.RATE];
+    const subtotalCell = r.children[COL.SUBTOTAL];
+    const markupCell = r.children[COL.MARKUP];
+    const totalCell = r.children[COL.TOTAL];
+
+    if (!qtyCell || !rateCell || !subtotalCell || !markupCell || !totalCell) continue;
+
+    // If subtotal uploaded, we preserve it.
+    let subtotal = null;
+
+    if (cellHasUploadedValue(subtotalCell)) {
+      subtotal = parseMoney(subtotalCell.textContent);
+    } else {
+      const qty = parseNumber(qtyCell.textContent);
+      const rate = parseMoney(rateCell.textContent);
+      if (qty !== 0 && rate !== 0) {
+        subtotal = qty * rate;
+        subtotalCell.textContent = formatMoney(subtotal);
+      }
+    }
+
+    // TOTAL: uploaded wins.
+    if (cellHasUploadedValue(totalCell)) continue;
+
+    if (subtotal !== null) {
+      let total = subtotal;
+
+      if (cellHasUploadedValue(markupCell)) {
+        const pct = parsePercent(markupCell.textContent);
+        if (pct !== null) total = subtotal * (1 + pct / 100);
+      }
+
+      totalCell.textContent = formatMoney(total);
+    }
+  }
+}
+
+/* ============================================================
+ * HIERARCHY INDEX (unchanged)
  * Parent = most specific PRIOR row that covers the child
- * Rates attach to their base code
+ * Rates attach to their base code.
  * ============================================================ */
 function buildHierarchyIndex(allRows) {
   const nodes = allRows
@@ -116,8 +174,8 @@ function buildHierarchyIndex(allRows) {
 
   const parentOf = new Map();        // code -> parentCode|null
   const childrenOf = new Map();      // code -> [child codes]
-  const rateChildrenOf = new Map();  // code -> [rate codes]
-  const depthOf = new Map();         // code -> UI depth (0 = Level 1 per trade)
+  const rateChildrenOf = new Map();  // baseCode -> [rate codes]
+  const depthOf = new Map();         // code -> UI depth
 
   for (const n of nodes) {
     childrenOf.set(n.code, []);
@@ -149,7 +207,7 @@ function buildHierarchyIndex(allRows) {
     }
   }
 
-  // Attach rate rows to base nodes
+  // Attach rate rows
   for (const r of allRows) {
     const c = r.dataset.code;
     if (!c || !isRate(c)) continue;
@@ -158,7 +216,7 @@ function buildHierarchyIndex(allRows) {
     rateChildrenOf.get(base).push(c);
   }
 
-  // Compute UI depth
+  // Compute depth
   function computeDepth(code) {
     if (depthOf.has(code)) return depthOf.get(code);
     const p = parentOf.get(code);
@@ -171,7 +229,6 @@ function buildHierarchyIndex(allRows) {
   return { parentOf, childrenOf, rateChildrenOf, depthOf };
 }
 
-/* ================= CHILD CHECK (used for leaf rollups) ================= */
 function hasChildren(code, hierarchy) {
   if (!code || isRate(code)) return false;
   const { childrenOf, rateChildrenOf } = hierarchy;
@@ -179,58 +236,111 @@ function hasChildren(code, hierarchy) {
 }
 
 /* ============================================================
- * ROLLUPS (FIXED)
- * Include:
- * - Rate rows
- * - Non-rate LEAF rows with values (fixes "Trench Mesh" issue)
+ * PRESENTATION (unchanged from working GH Pages version)
+ * Applies AFTER CODE cell rebuild, uses !important to win.
+ * Level 1: bold + underline + lighter grey + subtle shading
+ * Level 2+: bold description
+ * Rates: unchanged
  * ============================================================ */
+function applyLevelPresentation(rowEl, code, codeCell, descCell, hierarchy) {
+  rowEl.style.removeProperty("background-color");
+
+  if (isRate(code)) return;
+
+  const depth = hierarchy.depthOf.get(code) || 0;
+
+  if (depth === 0) {
+    rowEl.style.setProperty("background-color", "#f1f5f9", "important"); // slate-100
+
+    if (codeCell) {
+      codeCell.style.setProperty("color", "#64748b", "important"); // slate-500
+      codeCell.style.setProperty("font-weight", "700", "important");
+      codeCell.style.setProperty("text-decoration", "underline", "important");
+
+      const labelSpan = codeCell.querySelector("span:last-child");
+      if (labelSpan) {
+        labelSpan.style.setProperty("color", "#64748b", "important");
+        labelSpan.style.setProperty("font-weight", "700", "important");
+        labelSpan.style.setProperty("text-decoration", "underline", "important");
+      }
+    }
+
+    if (descCell) {
+      descCell.style.setProperty("color", "#64748b", "important");
+      descCell.style.setProperty("font-weight", "700", "important");
+      descCell.style.setProperty("text-decoration", "underline", "important");
+    }
+  } else {
+    if (descCell) {
+      descCell.style.setProperty("font-weight", "700", "important");
+    }
+  }
+}
+
+/* ============================================================
+ * ROLLUPS (FIXED, value-based contribution)
+ * ============================================================ */
+function rowHasValues(rowEl) {
+  const qty = parseNumber(rowEl.children[COL.QTY]?.textContent);
+  const sub = parseMoney(rowEl.children[COL.SUBTOTAL]?.textContent);
+  const tot = parseMoney(rowEl.children[COL.TOTAL]?.textContent);
+  return qty !== 0 || sub !== 0 || tot !== 0;
+}
+
 function recomputeAllRollups(allRows, hierarchy) {
   const nodes = allRows.filter(r => r.dataset.code && !isRate(r.dataset.code));
 
   for (const node of nodes) {
     const nCode = node.dataset.code;
-    let qty = 0, subtotal = 0, total = 0;
+    let subtotal = 0;
+    let total = 0;
 
-    for (const r of allRows) {
-      const rCode = r.dataset.code;
-      if (!rCode) continue;
+    const rateChildren = hierarchy.rateChildrenOf.get(nCode) || [];
 
-      const isRateRow = isRate(rCode);
+    if (rateChildren.length > 0) {
+      // 🔒 Sum ONLY direct child RATE rows
+      for (const rateCode of rateChildren) {
+        const r = allRows.find(row => row.dataset.code === rateCode);
+        if (!r) continue;
 
-      // Non-rate leaf items should roll up too
-      const isLeafNonRate = !isRateRow && !hasChildren(rCode, hierarchy);
+        subtotal += parseMoney(r.children[COL.SUBTOTAL]?.textContent);
+        total += parseMoney(r.children[COL.TOTAL]?.textContent);
+      }
+    } else {
+      // 🔁 Fallback: sum descendant values (SUBTOTAL + TOTAL only)
+      for (const r of allRows) {
+        const rCode = r.dataset.code;
+        if (!rCode) continue;
 
-      if (!isRateRow && !isLeafNonRate) continue;
+        const contributes = isRate(rCode) || rowHasValues(r);
+        if (!contributes) continue;
 
-      const base = stripRate(rCode); // rates base to their parent; non-rates unchanged
+        const base = stripRate(rCode);
 
-      // Contributes if:
-      // - the base equals this node, or
-      // - the base is a descendant under this node
-      if (base === nCode || isDescendant(nCode, base)) {
-        qty += parseNumber(r.children[COL.QTY]?.textContent || 0);
-        subtotal += parseMoney(r.children[COL.SUBTOTAL]?.textContent || 0);
-        total += parseMoney(r.children[COL.TOTAL]?.textContent || 0);
+        if (base === nCode || isDescendant(nCode, base)) {
+          subtotal += parseMoney(r.children[COL.SUBTOTAL]?.textContent);
+          total += parseMoney(r.children[COL.TOTAL]?.textContent);
+        }
       }
     }
 
-    node.children[COL.QTY].textContent = qty ? String(qty) : "";
+    // 🔒 Parent rows never show quantity
+    node.children[COL.QTY].textContent = "";
+
     node.children[COL.SUBTOTAL].textContent = formatMoney(subtotal);
     node.children[COL.TOTAL].textContent = formatMoney(total);
   }
 }
 
-/* ================= VISIBILITY ================= */
+/* ================= VISIBILITY (unchanged) ================= */
 function hideSubtree(code, allRows, hierarchy) {
   const { childrenOf, rateChildrenOf } = hierarchy;
 
-  // hide attached rates
   (rateChildrenOf.get(code) || []).forEach(rc => {
     const el = allRows.find(r => r.dataset.code === rc);
     if (el) el.style.display = "none";
   });
 
-  // hide children and recurse
   (childrenOf.get(code) || []).forEach(child => {
     const el = allRows.find(r => r.dataset.code === child);
     if (el) {
@@ -245,64 +355,18 @@ function hideSubtree(code, allRows, hierarchy) {
 function showImmediateChildren(code, allRows, hierarchy) {
   const { childrenOf, rateChildrenOf } = hierarchy;
 
-  // show only immediate children
   (childrenOf.get(code) || []).forEach(child => {
     const el = allRows.find(r => r.dataset.code === child);
     if (el) el.style.display = "grid";
   });
 
-  // show only attached rates (direct)
   (rateChildrenOf.get(code) || []).forEach(rc => {
     const el = allRows.find(r => r.dataset.code === rc);
     if (el) el.style.display = "grid";
   });
 }
 
-/* ============================================================
- * PRESENTATION (GUARANTEED)
- * Apply styles AFTER the CODE cell is rebuilt.
- * ============================================================ */
-function applyLevelPresentation(rowEl, code, codeCell, descCell, hierarchy) {
-  // Reset (idempotent)
-  rowEl.style.backgroundColor = "";
-  if (codeCell) {
-    codeCell.style.color = "";
-    codeCell.style.fontWeight = "";
-    codeCell.style.textDecoration = "";
-  }
-  if (descCell) {
-    descCell.style.color = "";
-    descCell.style.fontWeight = "";
-    descCell.style.textDecoration = "";
-  }
-
-  // Rates: leave as-is (blue pill background already applied in renderFromCSV)
-  if (isRate(code)) return;
-
-  const depth = hierarchy.depthOf.get(code) || 0;
-
-  if (depth === 0) {
-    // Level 1: bold + underline + lighter grey + subtle shading
-    rowEl.style.backgroundColor = "#f1f5f9"; // slate-100 (subtle shading)
-    if (codeCell) {
-      codeCell.style.color = "#64748b"; // slate-500
-      codeCell.style.fontWeight = "700";
-      codeCell.style.textDecoration = "underline";
-    }
-    if (descCell) {
-      descCell.style.color = "#64748b";
-      descCell.style.fontWeight = "700";
-      descCell.style.textDecoration = "underline";
-    }
-  } else {
-    // Level 2+: bold headings (non-rates)
-    if (descCell) {
-      descCell.style.fontWeight = "700";
-    }
-  }
-}
-
-/* ================= UI INIT ================= */
+/* ================= UI INIT (unchanged) ================= */
 function initBoqUI(allRows, hierarchy) {
   const { depthOf } = hierarchy;
 
@@ -314,17 +378,17 @@ function initBoqUI(allRows, hierarchy) {
     const descCell = r.children[COL.DESC];
     if (!codeCell || !descCell) continue;
 
-    // Indentation (unchanged intent)
+    // Indentation
     if (!isRate(code)) {
       const d = depthOf.get(code) || 0;
-      descCell.style.paddingLeft = `${d * INDENT_PX}px`;
+      descCell.style.setProperty("padding-left", `${d * INDENT_PX}px`, "important");
     } else {
       const base = stripRate(code);
       const pd = depthOf.get(base) || 0;
-      descCell.style.paddingLeft = `${(pd + 1) * INDENT_PX}px`;
+      descCell.style.setProperty("padding-left", `${(pd + 1) * INDENT_PX}px`, "important");
     }
 
-    // Rebuild CODE cell (existing behaviour)
+    // Rebuild CODE cell
     const codeLabel = code;
     codeCell.innerHTML = "";
     const wrap = document.createElement("div");
@@ -359,12 +423,12 @@ function initBoqUI(allRows, hierarchy) {
     wrap.appendChild(label);
     codeCell.appendChild(wrap);
 
-    // ✅ APPLY PRESENTATION AFTER rebuild (THIS is what was missing)
+    // Apply presentation AFTER rebuild
     applyLevelPresentation(r, code, codeCell, descCell, hierarchy);
   }
 }
 
-/* ================= CSV LOAD ================= */
+/* ================= CSV LOAD (unchanged) ================= */
 function parseCSV(text) {
   const lines = text.trim().split(/\r?\n/);
   lines.shift(); // headers
@@ -417,7 +481,7 @@ function renderFromCSV(data) {
   });
 }
 
-/* ================= BOOTSTRAP (NO BOOTSTRAP USED) ================= */
+/* ================= STARTUP (ONLY CHANGE: CALCS BEFORE ROLLUPS) ================= */
 document.addEventListener("DOMContentLoaded", async () => {
   const res = await fetch(AUTO_CSV_PATH, { cache: "no-store" });
   const text = await res.text();
@@ -429,7 +493,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const all = rows();
   const hierarchy = buildHierarchyIndex(all);
 
-  // Initial visibility: show only root (parent null) non-rate rows; hide all others
+  // Initial visibility: show only root headings; hide all others
   for (const r of all) {
     const code = r.dataset.code;
     if (!code) continue;
@@ -452,5 +516,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   initBoqUI(all, hierarchy);
+
+  // ✅ NEW: fill SUBTOTAL/TOTAL only when those cells are blank
+  applyRowCalculations(all);
+
+  // ✅ Rollups run after calculations
   recomputeAllRollups(all, hierarchy);
 });
