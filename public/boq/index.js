@@ -144,7 +144,7 @@ function makeNumericInput(initialValue = "") {
 
   // Sleek, modern, rounded – Tailwind only
   input.className =
-    "w-full bg-white text-slate-900 text-right px-2 py-1 rounded-md " +
+    "w-full bg-white text-slate-900 text-centred px-2 py-1 rounded-md " +
     "focus:outline-none focus:ring-2 focus:ring-slate-300";
 
   return input;
@@ -588,14 +588,18 @@ function enableEditingForRateRow(r, hierarchy) {
     const rTxt = normaliseEditableNumberText(rateInput.value);
     const fTxt = normaliseEditableNumberText(factorInput.value);
 
-    qtyInput.value = qTxt;
-    rateInput.value = rTxt;
-    factorInput.value = fTxt;
+    const qVal = qTxt === "" ? "" : parseNumber(qTxt).toFixed(3);
+    const rVal = rTxt === "" ? "" : parseNumber(rTxt).toFixed(2);
+    const fVal = fTxt === "" ? "" : parseNumber(fTxt).toFixed(3);
+
+    qtyInput.value = qVal;
+    rateInput.value = rVal;
+    factorInput.value = fVal;
 
     overrides[code] = {
-      qty: qTxt === "" ? "" : parseNumber(qTxt),
-      rate: rTxt === "" ? "" : parseNumber(rTxt),
-      factor: fTxt === "" ? "" : parseNumber(fTxt)
+      qty: qVal === "" ? "" : parseNumber(qVal),
+      rate: rVal === "" ? "" : parseNumber(rVal),
+      factor: fVal === "" ? "" : parseNumber(fVal)
     };
     saveOverrides(overrides);
 

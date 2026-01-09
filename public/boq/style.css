@@ -1,18 +1,15 @@
 /* =========================================================
-   PAGE WIDTH CONTROL
-   A4 Portrait (210mm) → A4 Landscape-ish (280mm)
+   PAGE WIDTH – SCREEN MODE (FULL WIDTH)
    ========================================================= */
 
 #boqPage {
-  min-width: 210mm;
-  max-width: 280mm;
-
+  width: 90%;
   margin-left: auto;
   margin-right: auto;
 }
 
 /* =========================================================
-   EXISTING GRID (UNCHANGED)
+   GRID STRUCTURE (UNCHANGED)
    ========================================================= */
 
 .boq-grid {
@@ -29,34 +26,39 @@
   align-items: center;
 }
 
-@media print {
-  @page {
-    size: A4 portrait;   /* or landscape */
-    margin: 15mm;
-  }
+/* =========================================================
+   HEADER ALIGNMENT – MATCH BODY CELLS
+   ========================================================= */
 
-  body {
-    background: white;
-    padding: 0;
-  }
+.boq-grid.header-row > div {
+  padding-left: 0.75rem;   /* matches px-3 */
+  padding-right: 0.75rem;
+}
 
-  #boqPage {
-    width: 100%;
-    max-width: none;
-    box-shadow: none;
-    border-radius: 0;
-  }
+/* Headings aligned to suit the UI:
+   - QTY/UNIT/RATE/FACTOR: centred over input fields
+   - SUBTOTAL/TOTAL: right-aligned (currency columns)
+*/
+.boq-grid.header-row > div:nth-child(2){
+  text-align: centre;
+}
 
-  /* Optional: force exact column widths */
-  .boq-grid {
-    grid-template-columns:
-      45mm   /* CODE */
-      1fr    /* DESCRIPTION */
-      18mm   /* QTY */
-      15mm   /* UNIT */
-      22mm   /* RATE */
-      25mm   /* SUBTOTAL */
-      18mm   /* FACTOR */
-      25mm;  /* TOTAL */
-  }
+.boq-grid.header-row > div:nth-child(3),
+.boq-grid.header-row > div:nth-child(4),
+.boq-grid.header-row > div:nth-child(5),
+.boq-grid.header-row > div:nth-child(7),
+.boq-grid.header-row > div:nth-child(6) {
+  text-align: center;
+}
+
+
+.boq-grid.header-row > div:nth-child(8) {
+  text-align: centered;
+}
+
+/* ================= INPUT FIELD SIZE & TEXT ================= */
+
+.boq-grid input {
+  width: 80px;        /* change this to 70px / 80px if desired */
+  text-align: centre;  /* text inside the input */
 }
