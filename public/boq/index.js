@@ -1,19 +1,17 @@
 /*************************************************************
  * BOQ CSV (AUTO-LOAD) + HIERARCHY + COLLAPSE + ROLLUP ENGINE
  *
- * THIS REVISION:
- * - Keeps previous working render/UI/CSS behaviour (no layout changes)
- * - Fixes rollups so parents sum:
- *    (a) rate rows (.R#)
- *    (b) non-rate rows that carry values (QTY/SUBTOTAL/TOTAL != 0),
- *        even if those rows have children (e.g. "Trench Mesh" case)
+ * THIS REVISION (MINIMAL UI CHANGE ONLY):
+ * - RATE rows (.R#) editable via INPUT FIELDS:
+ *     QTY + RATE + FACTOR (column 6, previously MARKUP)
+ * - Edits override CSV values
+ * - Overrides persist via localStorage
+ * - Overrides re-applied on load
  *
- * NEW (CALCULATIONS):
- * - SUBTOTAL = QTY × RATE, ONLY if SUBTOTAL cell is blank (CSV prevails)
- * - TOTAL = SUBTOTAL × (1 + MARKUP%), ONLY if TOTAL cell is blank (CSV prevails)
- * - If MARKUP blank, TOTAL = SUBTOTAL (when TOTAL blank)
+ * REQUIRED SUPPORTING CHANGE:
+ * - applyRowCalculations reads FACTOR from input.value if present
  *
- * No Bootstrap. Tailwind layout unchanged.
+ * Everything else unchanged.
  *************************************************************/
 
 /* ================= COLUMN MAP ================= */
@@ -24,13 +22,16 @@ const COL = {
   UNIT: 3,
   RATE: 4,
   SUBTOTAL: 5,
-  MARKUP: 6,
+  MARKUP: 6, // UI label = FACTOR
   TOTAL: 7
 };
 
 /* ================= CONFIG ================= */
 const INDENT_PX = 20;           // ~3–5mm
 const AUTO_CSV_PATH = "./boq.csv";
+
+/* ================= STAGE 1: LOCAL STORAGE KEY ================= */
+const STORAGE_KEY = "boqRateOverrides";
 
 /* ================= CODE UTILITIES ================= */
 function isRate(code) {
@@ -102,23 +103,62 @@ function formatMoney(n) {
   return "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+/**
+ * Uploaded values are those that came from CSV at render time.
+ * Computed values are allowed to change after user edits.
+ */
 function cellHasUploadedValue(cellEl) {
-  // IMPORTANT: use text presence, not numeric > 0
-  // because "$0.00" or "0" are valid uploaded values.
-  return !!cellEl && String(cellEl.textContent ?? "").trim().length > 0;
+  return !!cellEl && cellEl.dataset && cellEl.dataset.uploaded === "1";
+}
+
+/* ================= LOCAL STORAGE HELPERS ================= */
+function loadOverrides() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveOverrides(obj) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
+}
+
+function normaliseEditableNumberText(s) {
+  const cleaned = String(s ?? "")
+    .replace(/[$,%\s]/g, "")
+    .replace(/,/g, "")
+    .trim();
+
+  if (cleaned === "") return "";
+
+  const n = parseFloat(cleaned);
+  return Number.isFinite(n) ? String(n) : "";
+}
+
+/* ================= MINIMAL UI: INPUT CREATOR ================= */
+function makeNumericInput(initialValue = "") {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = initialValue;
+
+  // Sleek, modern, rounded – Tailwind only
+  input.className =
+    "w-full bg-white text-slate-900 text-right px-2 py-1 rounded-md " +
+    "focus:outline-none focus:ring-2 focus:ring-slate-300";
+
+  return input;
+}
+
+function getCellNumericText(cellEl) {
+  if (!cellEl) return "";
+  const inp = cellEl.querySelector("input");
+  return inp ? inp.value : cellEl.textContent;
 }
 
 /* ============================================================
- * CALCULATIONS (NEW, DOES NOT OVERRIDE UPLOADED VALUES)
- *
- * Rules:
- * - If SUBTOTAL cell has any text -> keep it.
- *   Else if QTY and RATE are present -> SUBTOTAL = QTY × RATE
- *
- * - If TOTAL cell has any text -> keep it.
- *   Else if SUBTOTAL is available (uploaded or computed):
- *        If MARKUP cell has any text -> TOTAL = SUBTOTAL × (1 + %/100)
- *        Else TOTAL = SUBTOTAL
+ * CALCULATIONS (DOES NOT OVERRIDE UPLOADED VALUES)
+ * REQUIRED CHANGE: FACTOR reads from input.value if present
  * ============================================================ */
 function applyRowCalculations(allRows) {
   for (const r of allRows) {
@@ -127,37 +167,44 @@ function applyRowCalculations(allRows) {
     const qtyCell = r.children[COL.QTY];
     const rateCell = r.children[COL.RATE];
     const subtotalCell = r.children[COL.SUBTOTAL];
-    const markupCell = r.children[COL.MARKUP];
+    const markupCell = r.children[COL.MARKUP]; // FACTOR
     const totalCell = r.children[COL.TOTAL];
 
     if (!qtyCell || !rateCell || !subtotalCell || !markupCell || !totalCell) continue;
 
-    // If subtotal uploaded, we preserve it.
+    const qty = parseNumber(getCellNumericText(qtyCell));
+    const rate = parseMoney(getCellNumericText(rateCell));
+
+    // SUBTOTAL
     let subtotal = null;
 
     if (cellHasUploadedValue(subtotalCell)) {
       subtotal = parseMoney(subtotalCell.textContent);
     } else {
-      const qty = parseNumber(qtyCell.textContent);
-      const rate = parseMoney(rateCell.textContent);
       if (qty !== 0 && rate !== 0) {
         subtotal = qty * rate;
         subtotalCell.textContent = formatMoney(subtotal);
+      } else {
+        subtotalCell.textContent = "";
       }
     }
 
-    // TOTAL: uploaded wins.
+    // TOTAL
     if (cellHasUploadedValue(totalCell)) continue;
 
     if (subtotal !== null) {
       let total = subtotal;
 
-      if (cellHasUploadedValue(markupCell)) {
-        const pct = parsePercent(markupCell.textContent);
+      // FACTOR (still % logic, unchanged)
+      const factorText = String(getCellNumericText(markupCell) ?? "").trim();
+      if (cellHasUploadedValue(markupCell) || factorText.length > 0) {
+        const pct = parsePercent(factorText);
         if (pct !== null) total = subtotal * (1 + pct / 100);
       }
 
       totalCell.textContent = formatMoney(total);
+    } else {
+      if (!cellHasUploadedValue(totalCell)) totalCell.textContent = "";
     }
   }
 }
@@ -236,11 +283,7 @@ function hasChildren(code, hierarchy) {
 }
 
 /* ============================================================
- * PRESENTATION (unchanged from working GH Pages version)
- * Applies AFTER CODE cell rebuild, uses !important to win.
- * Level 1: bold + underline + lighter grey + subtle shading
- * Level 2+: bold description
- * Rates: unchanged
+ * PRESENTATION (unchanged)
  * ============================================================ */
 function applyLevelPresentation(rowEl, code, codeCell, descCell, hierarchy) {
   rowEl.style.removeProperty("background-color");
@@ -278,7 +321,7 @@ function applyLevelPresentation(rowEl, code, codeCell, descCell, hierarchy) {
 }
 
 /* ============================================================
- * ROLLUPS (FIXED, value-based contribution)
+ * ROLLUPS (unchanged)
  * ============================================================ */
 function rowHasValues(rowEl) {
   const qty = parseNumber(rowEl.children[COL.QTY]?.textContent);
@@ -362,7 +405,11 @@ function showImmediateChildren(code, allRows, hierarchy) {
 
   (rateChildrenOf.get(code) || []).forEach(rc => {
     const el = allRows.find(r => r.dataset.code === rc);
-    if (el) el.style.display = "grid";
+    if (el) {
+      el.style.display = "grid";
+      // REQUIRED: ensure newly shown rate rows get inputs + listeners
+      enableEditingForRateRow(el, hierarchy);
+    }
   });
 }
 
@@ -428,10 +475,10 @@ function initBoqUI(allRows, hierarchy) {
   }
 }
 
-/* ================= CSV LOAD (unchanged) ================= */
+/* ================= CSV LOAD (unchanged, with uploaded flags) ================= */
 function parseCSV(text) {
   const lines = text.trim().split(/\r?\n/);
-  lines.shift(); // headers
+  lines.shift();
   return lines
     .filter(l => l.trim().length > 0)
     .map(l => {
@@ -443,7 +490,7 @@ function parseCSV(text) {
         UNIT: (v[3] ?? "").trim(),
         RATE: (v[4] ?? "").trim(),
         SUBTOTAL: (v[5] ?? "").trim(),
-        MARKUP: (v[6] ?? "").trim(),
+        MARKUP: (v[6] ?? "").trim(), // FACTOR
         TOTAL: (v[7] ?? "").trim()
       };
     });
@@ -477,11 +524,119 @@ function renderFromCSV(data) {
       <div class="text-right">${row.TOTAL || ""}</div>
     `;
 
+    const subtotalCell = el.children[COL.SUBTOTAL];
+    const markupCell = el.children[COL.MARKUP];
+    const totalCell = el.children[COL.TOTAL];
+
+    if (row.SUBTOTAL && subtotalCell) subtotalCell.dataset.uploaded = "1";
+    if (row.MARKUP && markupCell) markupCell.dataset.uploaded = "1";
+    if (row.TOTAL && totalCell) totalCell.dataset.uploaded = "1";
+
     container.appendChild(el);
   });
 }
 
-/* ================= STARTUP (ONLY CHANGE: CALCS BEFORE ROLLUPS) ================= */
+/* ================= RATE EDITING (INPUT FIELDS) ================= */
+function enableEditingForRateRow(r, hierarchy) {
+  const code = r.dataset.code;
+  if (!code || !isRate(code)) return;
+
+  const qtyCell = r.children[COL.QTY];
+  const rateCell = r.children[COL.RATE];
+  const factorCell = r.children[COL.MARKUP];
+  if (!qtyCell || !rateCell || !factorCell) return;
+
+  // Prevent double-binding / double-injection
+  if (qtyCell.dataset.editEnabled === "1") return;
+
+  qtyCell.dataset.editEnabled = "1";
+  rateCell.dataset.editEnabled = "1";
+  factorCell.dataset.editEnabled = "1";
+
+  const overrides = loadOverrides();
+
+  // Determine initial values (CSV first, then override)
+  const initialQty =
+    overrides[code] && overrides[code].qty !== undefined
+      ? String(overrides[code].qty)
+      : String(qtyCell.textContent || "");
+
+  const initialRate =
+    overrides[code] && overrides[code].rate !== undefined
+      ? String(overrides[code].rate)
+      : String(rateCell.textContent || "");
+
+  const initialFactor =
+    overrides[code] && overrides[code].factor !== undefined
+      ? String(overrides[code].factor)
+      : String(factorCell.textContent || "");
+
+  // Inject inputs (sleek)
+  const qtyInput = makeNumericInput(initialQty);
+  const rateInput = makeNumericInput(initialRate);
+  const factorInput = makeNumericInput(initialFactor);
+
+  qtyCell.textContent = "";
+  rateCell.textContent = "";
+  factorCell.textContent = "";
+  qtyCell.appendChild(qtyInput);
+  rateCell.appendChild(rateInput);
+  factorCell.appendChild(factorInput);
+
+  function persistAndRefresh() {
+    const qTxt = normaliseEditableNumberText(qtyInput.value);
+    const rTxt = normaliseEditableNumberText(rateInput.value);
+    const fTxt = normaliseEditableNumberText(factorInput.value);
+
+    qtyInput.value = qTxt;
+    rateInput.value = rTxt;
+    factorInput.value = fTxt;
+
+    overrides[code] = {
+      qty: qTxt === "" ? "" : parseNumber(qTxt),
+      rate: rTxt === "" ? "" : parseNumber(rTxt),
+      factor: fTxt === "" ? "" : parseNumber(fTxt)
+    };
+    saveOverrides(overrides);
+
+    const allNow = rows();
+    applyRowCalculations(allNow);
+    recomputeAllRollups(allNow, hierarchy);
+  }
+
+  qtyInput.addEventListener("blur", persistAndRefresh);
+  rateInput.addEventListener("blur", persistAndRefresh);
+  factorInput.addEventListener("blur", persistAndRefresh);
+
+  // Enter commits (optional, matches your prior behaviour)
+  qtyInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      qtyInput.blur();
+    }
+  });
+  rateInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      rateInput.blur();
+    }
+  });
+  factorInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      factorInput.blur();
+    }
+  });
+}
+
+/* ================= STAGE 1: enable for all rates currently present ================= */
+function enableRateEditing(allRows, hierarchy) {
+  for (const r of allRows) {
+    enableEditingForRateRow(r, hierarchy);
+  }
+}
+
+/* ================= STARTUP ================= */
 document.addEventListener("DOMContentLoaded", async () => {
   const res = await fetch(AUTO_CSV_PATH, { cache: "no-store" });
   const text = await res.text();
@@ -517,9 +672,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   initBoqUI(all, hierarchy);
 
-  // ✅ NEW: fill SUBTOTAL/TOTAL only when those cells are blank
+  // Enable editing (inputs) for all rate rows (even while hidden)
+  enableRateEditing(all, hierarchy);
+
+  // Calculate after overrides
   applyRowCalculations(all);
 
-  // ✅ Rollups run after calculations
+  // Rollups after calculations
   recomputeAllRollups(all, hierarchy);
 });

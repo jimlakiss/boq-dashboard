@@ -1,4 +1,20 @@
-/* Pure Tailwind for styling; this is only structural alignment */
+/* =========================================================
+   PAGE WIDTH CONTROL
+   A4 Portrait (210mm) → A4 Landscape-ish (280mm)
+   ========================================================= */
+
+#boqPage {
+  min-width: 210mm;
+  max-width: 280mm;
+
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* =========================================================
+   EXISTING GRID (UNCHANGED)
+   ========================================================= */
+
 .boq-grid {
   display: grid;
   grid-template-columns:
@@ -8,7 +24,39 @@
     80px    /* UNIT */
     110px   /* RATE */
     130px   /* SUBTOTAL */
-    90px    /* MARKUP */
+    90px    /* FACTOR */
     130px;  /* TOTAL */
   align-items: center;
+}
+
+@media print {
+  @page {
+    size: A4 portrait;   /* or landscape */
+    margin: 15mm;
+  }
+
+  body {
+    background: white;
+    padding: 0;
+  }
+
+  #boqPage {
+    width: 100%;
+    max-width: none;
+    box-shadow: none;
+    border-radius: 0;
+  }
+
+  /* Optional: force exact column widths */
+  .boq-grid {
+    grid-template-columns:
+      45mm   /* CODE */
+      1fr    /* DESCRIPTION */
+      18mm   /* QTY */
+      15mm   /* UNIT */
+      22mm   /* RATE */
+      25mm   /* SUBTOTAL */
+      18mm   /* FACTOR */
+      25mm;  /* TOTAL */
+  }
 }
