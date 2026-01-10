@@ -1,15 +1,10 @@
 /*************************************************************
  * BOQ CSV (AUTO-LOAD) + HIERARCHY + COLLAPSE + ROLLUP ENGINE
  *
- * THIS REVISION (MINIMAL UI CHANGE ONLY):
- * - RATE rows (.R#) editable via INPUT FIELDS:
- *     QTY + RATE + FACTOR (column 6, previously MARKUP)
- * - Edits override CSV values
- * - Overrides persist via localStorage
- * - Overrides re-applied on load
- *
- * REQUIRED SUPPORTING CHANGE:
- * - applyRowCalculations reads FACTOR from input.value if present
+ * THIS REVISION (MINIMAL CHANGE):
+ * - Fix rollups: parents sum ALL descendant RATE rows recursively
+ *   + include non-rate rows with uploaded SUBTOTAL/TOTAL (Trench Mesh case)
+ * - Fix Rails Turbo: init runs on DOMContentLoaded + turbo:load
  *
  * Everything else unchanged.
  *************************************************************/
@@ -144,7 +139,7 @@ function makeNumericInput(initialValue = "") {
 
   // Sleek, modern, rounded – Tailwind only
   input.className =
-    "w-full bg-white text-slate-900 text-centred px-2 py-1 rounded-md " +
+    "w-full bg-white text-slate-900 text-right px-2 py-1 rounded-md " +
     "focus:outline-none focus:ring-2 focus:ring-slate-300";
 
   return input;
@@ -321,13 +316,17 @@ function applyLevelPresentation(rowEl, code, codeCell, descCell, hierarchy) {
 }
 
 /* ============================================================
- * ROLLUPS (unchanged)
+ * ROLLUPS (FIXED: recursive descendant rates + uploaded non-rate values)
+ *
+ * Rule:
+ * - Parent sums ALL descendant RATE rows recursively (base covered by parent)
+ * - PLUS non-rate rows that have uploaded SUBTOTAL/TOTAL (even if they have children)
+ * - Avoid double-counting rollup nodes by only counting uploaded values for non-rates
  * ============================================================ */
-function rowHasValues(rowEl) {
-  const qty = parseNumber(rowEl.children[COL.QTY]?.textContent);
-  const sub = parseMoney(rowEl.children[COL.SUBTOTAL]?.textContent);
-  const tot = parseMoney(rowEl.children[COL.TOTAL]?.textContent);
-  return qty !== 0 || sub !== 0 || tot !== 0;
+function rowHasUploadedMoney(rowEl) {
+  const subCell = rowEl.children[COL.SUBTOTAL];
+  const totCell = rowEl.children[COL.TOTAL];
+  return (subCell && cellHasUploadedValue(subCell)) || (totCell && cellHasUploadedValue(totCell));
 }
 
 function recomputeAllRollups(allRows, hierarchy) {
@@ -338,36 +337,33 @@ function recomputeAllRollups(allRows, hierarchy) {
     let subtotal = 0;
     let total = 0;
 
-    const rateChildren = hierarchy.rateChildrenOf.get(nCode) || [];
+    for (const r of allRows) {
+      const rCode = r.dataset.code;
+      if (!rCode) continue;
 
-    if (rateChildren.length > 0) {
-      // 🔒 Sum ONLY direct child RATE rows
-      for (const rateCode of rateChildren) {
-        const r = allRows.find(row => row.dataset.code === rateCode);
-        if (!r) continue;
+      // Descendancy test is done on base codes
+      const base = stripRate(rCode);
+      const within =
+        base === nCode || isDescendant(nCode, base);
 
+      if (!within) continue;
+
+      if (isRate(rCode)) {
+        // ✅ Recursive: include ALL descendant rate rows
+        subtotal += parseMoney(r.children[COL.SUBTOTAL]?.textContent);
+        total += parseMoney(r.children[COL.TOTAL]?.textContent);
+        continue;
+      }
+
+      // ✅ Non-rate rows: ONLY include if they have uploaded money values
+      // (prevents rollup rows from counting themselves / double counting)
+      if (rowHasUploadedMoney(r)) {
         subtotal += parseMoney(r.children[COL.SUBTOTAL]?.textContent);
         total += parseMoney(r.children[COL.TOTAL]?.textContent);
       }
-    } else {
-      // 🔁 Fallback: sum descendant values (SUBTOTAL + TOTAL only)
-      for (const r of allRows) {
-        const rCode = r.dataset.code;
-        if (!rCode) continue;
-
-        const contributes = isRate(rCode) || rowHasValues(r);
-        if (!contributes) continue;
-
-        const base = stripRate(rCode);
-
-        if (base === nCode || isDescendant(nCode, base)) {
-          subtotal += parseMoney(r.children[COL.SUBTOTAL]?.textContent);
-          total += parseMoney(r.children[COL.TOTAL]?.textContent);
-        }
-      }
     }
 
-    // 🔒 Parent rows never show quantity
+    // Parent rows never show quantity
     node.children[COL.QTY].textContent = "";
 
     node.children[COL.SUBTOTAL].textContent = formatMoney(subtotal);
@@ -588,18 +584,14 @@ function enableEditingForRateRow(r, hierarchy) {
     const rTxt = normaliseEditableNumberText(rateInput.value);
     const fTxt = normaliseEditableNumberText(factorInput.value);
 
-    const qVal = qTxt === "" ? "" : parseNumber(qTxt).toFixed(3);
-    const rVal = rTxt === "" ? "" : parseNumber(rTxt).toFixed(2);
-    const fVal = fTxt === "" ? "" : parseNumber(fTxt).toFixed(3);
-
-    qtyInput.value = qVal;
-    rateInput.value = rVal;
-    factorInput.value = fVal;
+    qtyInput.value = qTxt;
+    rateInput.value = rTxt;
+    factorInput.value = fTxt;
 
     overrides[code] = {
-      qty: qVal === "" ? "" : parseNumber(qVal),
-      rate: rVal === "" ? "" : parseNumber(rVal),
-      factor: fVal === "" ? "" : parseNumber(fVal)
+      qty: qTxt === "" ? "" : parseNumber(qTxt),
+      rate: rTxt === "" ? "" : parseNumber(rTxt),
+      factor: fTxt === "" ? "" : parseNumber(fTxt)
     };
     saveOverrides(overrides);
 
@@ -640,8 +632,15 @@ function enableRateEditing(allRows, hierarchy) {
   }
 }
 
-/* ================= STARTUP ================= */
-document.addEventListener("DOMContentLoaded", async () => {
+/* ================= STARTUP (Rails Turbo-safe) ================= */
+async function bootBoq() {
+  const container = document.getElementById("boqContainer");
+  if (!container) return;
+
+  // Prevent double init on the same DOM (Turbo can fire multiple events)
+  if (container.dataset.boqInit === "1") return;
+  container.dataset.boqInit = "1";
+
   const res = await fetch(AUTO_CSV_PATH, { cache: "no-store" });
   const text = await res.text();
   const data = parseCSV(text);
@@ -684,4 +683,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Rollups after calculations
   recomputeAllRollups(all, hierarchy);
+}
+
+// Plain static + first load
+document.addEventListener("DOMContentLoaded", bootBoq);
+
+// Rails Turbo navigation
+document.addEventListener("turbo:load", () => {
+  // New DOM, allow init again
+  const container = document.getElementById("boqContainer");
+  if (container) delete container.dataset.boqInit;
+  bootBoq();
 });

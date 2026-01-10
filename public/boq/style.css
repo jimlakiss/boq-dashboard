@@ -1,7 +1,34 @@
 /* =========================================================
-   PAGE WIDTH – SCREEN MODE (FULL WIDTH)
+   BOQ DASHBOARD — CSS (BEST-PRACTICE FOUNDATION)
+   Step 1 (Option B): CSS-first refactor
+
+   Goals:
+   - Preserve current behaviour and alignment
+   - Centralise presentation in CSS (ready for JS class toggles)
+   - Provide semantic hooks for Step 2 (JS refactor)
    ========================================================= */
 
+/* ---------- Design tokens ---------- */
+:root {
+  --bg-root-row: #f1f5f9;      /* slate-100 */
+  --text-root: #64748b;        /* slate-500 */
+  --text-default: #0f172a;     /* slate-900 */
+
+  --rate-row-bg: #e0f2fe;      /* sky-100 */
+  --code-link: #1d4ed8;        /* blue-700 */
+
+  --cell-pad-x: 0.75rem;       /* matches Tailwind px-3 */
+  --row-pad-y: 0.5rem;
+
+  --input-bg: #ffffff;
+  --input-border: #cbd5e1;     /* slate-300 */
+  --input-focus: #94a3b8;      /* slate-400 */
+  --input-radius: 0.375rem;    /* rounded-md */
+
+  --indent-step: 20px;         /* ~3–5mm (kept) */
+}
+
+/* ---------- Page width controller (as per your current HTML) ---------- */
 #boqPage {
   width: 90%;
   margin-left: auto;
@@ -10,8 +37,8 @@
 
 /* =========================================================
    GRID STRUCTURE (UNCHANGED)
+   IMPORTANT: This is the one source of truth for column widths.
    ========================================================= */
-
 .boq-grid {
   display: grid;
   grid-template-columns:
@@ -27,38 +54,140 @@
 }
 
 /* =========================================================
-   HEADER ALIGNMENT – MATCH BODY CELLS
+   CELL PADDING / ALIGNMENT (HEADER + BODY)
+   This is what keeps headings lined up with body cells on resize.
    ========================================================= */
 
+/* 1) Remove row-level horizontal padding so it doesn't fight cell padding */
+.boq-row.boq-grid {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* 2) Apply consistent padding to EVERY grid cell (header + body) */
+.boq-grid > div {
+  padding-left: var(--cell-pad-x);
+  padding-right: var(--cell-pad-x);
+  box-sizing: border-box;
+}
+
+/* 3) Numeric columns: make the RIGHT EDGE identical for text + inputs */
+.boq-grid > div:nth-child(3),
+.boq-grid > div:nth-child(4),
+.boq-grid > div:nth-child(5),
+.boq-grid > div:nth-child(6),
+.boq-grid > div:nth-child(7),
+.boq-grid > div:nth-child(8) {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+/* =========================================================
+   HEADER ROW
+   (Your HTML already uses: .boq-grid.header-row ...)
+   ========================================================= */
 .boq-grid.header-row > div {
-  padding-left: 0.75rem;   /* matches px-3 */
-  padding-right: 0.75rem;
+  /* Ensure header padding matches body padding */
+  padding-left: var(--cell-pad-x);
+  padding-right: var(--cell-pad-x);
 }
 
-/* Headings aligned to suit the UI:
-   - QTY/UNIT/RATE/FACTOR: centred over input fields
-   - SUBTOTAL/TOTAL: right-aligned (currency columns)
-*/
-.boq-grid.header-row > div:nth-child(2){
-  text-align: centre;
-}
-
+/* Keep header numeric labels aligned to the same right edge */
 .boq-grid.header-row > div:nth-child(3),
 .boq-grid.header-row > div:nth-child(4),
 .boq-grid.header-row > div:nth-child(5),
+.boq-grid.header-row > div:nth-child(6),
 .boq-grid.header-row > div:nth-child(7),
-.boq-grid.header-row > div:nth-child(6) {
-  text-align: center;
-}
-
-
 .boq-grid.header-row > div:nth-child(8) {
-  text-align: centered;
+  justify-content: flex-end; /* uses flex from the numeric rule above */
 }
 
-/* ================= INPUT FIELD SIZE & TEXT ================= */
+/* =========================================================
+   SEMANTIC ROW STYLES (JS will toggle these in Step 2)
+   These do NOT break anything if not applied yet.
+   ========================================================= */
 
+/* Root (Level 1 / trade group) */
+.boq-row.level-root {
+  background: var(--bg-root-row);
+}
+
+.boq-row.level-root .boq-cell-code,
+.boq-row.level-root .boq-cell-desc {
+  color: var(--text-root);
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+/* Non-rate headings (Level 2+) */
+.boq-row.level-heading .boq-cell-desc {
+  font-weight: 700;
+}
+
+/* Rate rows */
+.boq-row.is-rate {
+  background: var(--rate-row-bg);
+  border-radius: 0.375rem; /* rounded-md */
+  margin: 0.25rem 0.5rem;  /* matches your current look */
+}
+
+/* Code clickable styling (when JS sets it) */
+.boq-code-toggle {
+  cursor: pointer;
+  color: var(--code-link);
+  user-select: none;
+}
+
+/* Optional: icon alignment */
+.boq-toggle-icon {
+  color: var(--text-root);
+}
+
+/* =========================================================
+   INDENTATION (JS currently sets padding-left inline; Step 2 will move it here)
+   Hooks are ready so we can remove inline styles later.
+   ========================================================= */
+.boq-indent {
+  padding-left: calc(var(--indent-level, 0) * var(--indent-step));
+}
+
+/* =========================================================
+   INPUTS (ready for Step 2)
+   Today, inputs are styled via Tailwind classes in JS.
+   In Step 2 we’ll switch to: input.classList.add('boq-input')
+   ========================================================= */
+.boq-input {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--input-radius);
+  padding: 0.25rem 0.5rem;
+  line-height: 1.2;
+  color: var(--text-default);
+  text-align: right;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.boq-input:focus {
+  outline: none;
+  border-color: var(--input-focus);
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.35);
+}
+
+/* Ensure inputs don’t stretch awkwardly inside flex-aligned numeric cells */
 .boq-grid input {
-  width: 80px;        /* change this to 70px / 80px if desired */
-  text-align: centre;  /* text inside the input */
+  display: block;
 }
+
+/* =========================================================
+   OPTIONAL: Utility hooks for cells (Step 2 will add these classes)
+   ========================================================= */
+.boq-cell-code { }
+.boq-cell-desc { }
+.boq-cell-qty { }
+.boq-cell-unit { }
+.boq-cell-rate { }
+.boq-cell-subtotal { }
+.boq-cell-factor { }
+.boq-cell-total { }
