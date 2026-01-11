@@ -1,5 +1,5 @@
 /* =========================================================
-   BOQ DASHBOARD — CSS (BEST-PRACTICE FOUNDATION)
+   BOQ DASHBOARD - CSS (BEST-PRACTICE FOUNDATION)
    Step 1 (Option B): CSS-first refactor
 
    Goals:
@@ -25,7 +25,7 @@
   --input-focus: #94a3b8;      /* slate-400 */
   --input-radius: 0.375rem;    /* rounded-md */
 
-  --indent-step: 20px;         /* ~3–5mm (kept) */
+  --indent-step: 20px;         /* ~3-5mm (kept) */
 }
 
 /* ---------- Page width controller (as per your current HTML) ---------- */
@@ -62,6 +62,8 @@
 .boq-row.boq-grid {
   padding-left: 0 !important;
   padding-right: 0 !important;
+  padding-top: var(--row-pad-y);
+  padding-bottom: var(--row-pad-y);
 }
 
 /* 2) Apply consistent padding to EVERY grid cell (header + body) */
@@ -145,17 +147,17 @@
 }
 
 /* =========================================================
-   INDENTATION (JS currently sets padding-left inline; Step 2 will move it here)
-   Hooks are ready so we can remove inline styles later.
+   INDENTATION (using CSS custom properties)
+   JS sets --indent-level as a number, CSS calculates the padding
    ========================================================= */
 .boq-indent {
-  padding-left: calc(var(--indent-level, 0) * var(--indent-step));
+  padding-left: calc(var(--indent-level, 0) * var(--indent-step)) !important;
 }
 
 /* =========================================================
    INPUTS (ready for Step 2)
    Today, inputs are styled via Tailwind classes in JS.
-   In Step 2 we’ll switch to: input.classList.add('boq-input')
+   In Step 2 we'll switch to: input.classList.add('boq-input')
    ========================================================= */
 .boq-input {
   background: var(--input-bg);
@@ -175,7 +177,7 @@
   box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.35);
 }
 
-/* Ensure inputs don’t stretch awkwardly inside flex-aligned numeric cells */
+/* Ensure inputs don't stretch awkwardly inside flex-aligned numeric cells */
 .boq-grid input {
   display: block;
 }

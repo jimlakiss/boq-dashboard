@@ -1,12 +1,14 @@
 /*************************************************************
  * BOQ CSV (AUTO-LOAD) + HIERARCHY + COLLAPSE + ROLLUP ENGINE
  *
- * THIS REVISION (MINIMAL CHANGE):
- * - Fix rollups: parents sum ALL descendant RATE rows recursively
- *   + include non-rate rows with uploaded SUBTOTAL/TOTAL (Trench Mesh case)
- * - Fix Rails Turbo: init runs on DOMContentLoaded + turbo:load
- *
- * Everything else unchanged.
+ * IMPROVEMENTS:
+ * - Fixed UTF-8 character encoding issues
+ * - Removed px-3 from generated rows (handled by CSS)
+ * - Added error handling for CSV loading
+ * - Added input validation
+ * - Using CSS custom properties for indentation
+ * - Better CSV parsing for quoted fields
+ * - Performance improvements
  *************************************************************/
 
 /* ================= COLUMN MAP ================= */
@@ -22,11 +24,13 @@ const COL = {
 };
 
 /* ================= CONFIG ================= */
-const INDENT_PX = 20;           // ~3–5mm
-const AUTO_CSV_PATH = "./boq.csv";
-
-/* ================= STAGE 1: LOCAL STORAGE KEY ================= */
-const STORAGE_KEY = "boqRateOverrides";
+const CONFIG = {
+  INDENT_PX: 20,           // ~3-5mm
+  AUTO_CSV_PATH: "./boq.csv",
+  STORAGE_KEY: "boqRateOverrides",
+  COLLAPSE_ICON: "▸",      // Right-pointing triangle
+  EXPAND_ICON: "▾"         // Down-pointing triangle
+};
 
 /* ================= CODE UTILITIES ================= */
 function isRate(code) {
@@ -109,14 +113,14 @@ function cellHasUploadedValue(cellEl) {
 /* ================= LOCAL STORAGE HELPERS ================= */
 function loadOverrides() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+    return JSON.parse(localStorage.getItem(CONFIG.STORAGE_KEY)) || {};
   } catch {
     return {};
   }
 }
 
 function saveOverrides(obj) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
+  localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(obj));
 }
 
 function normaliseEditableNumberText(s) {
@@ -136,11 +140,16 @@ function makeNumericInput(initialValue = "") {
   const input = document.createElement("input");
   input.type = "text";
   input.value = initialValue;
+  input.className = "boq-input"; // Using CSS class instead of Tailwind
 
-  // Sleek, modern, rounded – Tailwind only
-  input.className =
-    "w-full bg-white text-slate-900 text-right px-2 py-1 rounded-md " +
-    "focus:outline-none focus:ring-2 focus:ring-slate-300";
+  // Add input validation
+  input.addEventListener('input', (e) => {
+    const value = e.target.value;
+    // Allow numbers, decimals, negative, and empty
+    if (value && !/^-?\d*\.?\d*$/.test(value)) {
+      e.target.value = value.slice(0, -1);
+    }
+  });
 
   return input;
 }
@@ -153,7 +162,6 @@ function getCellNumericText(cellEl) {
 
 /* ============================================================
  * CALCULATIONS (DOES NOT OVERRIDE UPLOADED VALUES)
- * REQUIRED CHANGE: FACTOR reads from input.value if present
  * ============================================================ */
 function applyRowCalculations(allRows) {
   for (const r of allRows) {
@@ -190,7 +198,7 @@ function applyRowCalculations(allRows) {
     if (subtotal !== null) {
       let total = subtotal;
 
-      // FACTOR (still % logic, unchanged)
+      // FACTOR (percentage logic)
       const factorText = String(getCellNumericText(markupCell) ?? "").trim();
       if (cellHasUploadedValue(markupCell) || factorText.length > 0) {
         const pct = parsePercent(factorText);
@@ -205,7 +213,7 @@ function applyRowCalculations(allRows) {
 }
 
 /* ============================================================
- * HIERARCHY INDEX (unchanged)
+ * HIERARCHY INDEX
  * Parent = most specific PRIOR row that covers the child
  * Rates attach to their base code.
  * ============================================================ */
@@ -224,13 +232,28 @@ function buildHierarchyIndex(allRows) {
     rateChildrenOf.set(n.code, []);
   }
 
+  // Build parent lookup map by trade prefix for better performance
+  const candidatesByPrefix = new Map();
+  
   for (const n of nodes) {
+    const prefix = tradePrefix(n.code);
+    if (!candidatesByPrefix.has(prefix)) {
+      candidatesByPrefix.set(prefix, []);
+    }
+    candidatesByPrefix.get(prefix).push(n);
+  }
+
+  // Find parents efficiently
+  for (const n of nodes) {
+    const prefix = tradePrefix(n.code);
+    const candidates = candidatesByPrefix.get(prefix) || [];
+    
     let bestParent = null;
     let bestSpec = -1;
     let bestIdx = -1;
 
-    for (const p of nodes) {
-      if (p.idx >= n.idx) break; // prior rows only
+    for (const p of candidates) {
+      if (p.idx >= n.idx) continue; // prior rows only
       if (!covers(p.code, n.code)) continue;
 
       const spec = nonZeroCount(p.code);
@@ -278,7 +301,7 @@ function hasChildren(code, hierarchy) {
 }
 
 /* ============================================================
- * PRESENTATION (unchanged)
+ * PRESENTATION
  * ============================================================ */
 function applyLevelPresentation(rowEl, code, codeCell, descCell, hierarchy) {
   rowEl.style.removeProperty("background-color");
@@ -316,12 +339,11 @@ function applyLevelPresentation(rowEl, code, codeCell, descCell, hierarchy) {
 }
 
 /* ============================================================
- * ROLLUPS (FIXED: recursive descendant rates + uploaded non-rate values)
- *
+ * ROLLUPS
  * Rule:
- * - Parent sums ALL descendant RATE rows recursively (base covered by parent)
- * - PLUS non-rate rows that have uploaded SUBTOTAL/TOTAL (even if they have children)
- * - Avoid double-counting rollup nodes by only counting uploaded values for non-rates
+ * - Parent sums ALL descendant RATE rows recursively
+ * - PLUS non-rate rows that have uploaded SUBTOTAL/TOTAL
+ * - Avoid double-counting rollup nodes
  * ============================================================ */
 function rowHasUploadedMoney(rowEl) {
   const subCell = rowEl.children[COL.SUBTOTAL];
@@ -343,20 +365,18 @@ function recomputeAllRollups(allRows, hierarchy) {
 
       // Descendancy test is done on base codes
       const base = stripRate(rCode);
-      const within =
-        base === nCode || isDescendant(nCode, base);
+      const within = base === nCode || isDescendant(nCode, base);
 
       if (!within) continue;
 
       if (isRate(rCode)) {
-        // ✅ Recursive: include ALL descendant rate rows
+        // Recursive: include ALL descendant rate rows
         subtotal += parseMoney(r.children[COL.SUBTOTAL]?.textContent);
         total += parseMoney(r.children[COL.TOTAL]?.textContent);
         continue;
       }
 
-      // ✅ Non-rate rows: ONLY include if they have uploaded money values
-      // (prevents rollup rows from counting themselves / double counting)
+      // Non-rate rows: ONLY include if they have uploaded money values
       if (rowHasUploadedMoney(r)) {
         subtotal += parseMoney(r.children[COL.SUBTOTAL]?.textContent);
         total += parseMoney(r.children[COL.TOTAL]?.textContent);
@@ -371,7 +391,7 @@ function recomputeAllRollups(allRows, hierarchy) {
   }
 }
 
-/* ================= VISIBILITY (unchanged) ================= */
+/* ================= VISIBILITY ================= */
 function hideSubtree(code, allRows, hierarchy) {
   const { childrenOf, rateChildrenOf } = hierarchy;
 
@@ -403,13 +423,13 @@ function showImmediateChildren(code, allRows, hierarchy) {
     const el = allRows.find(r => r.dataset.code === rc);
     if (el) {
       el.style.display = "grid";
-      // REQUIRED: ensure newly shown rate rows get inputs + listeners
+      // Ensure newly shown rate rows get inputs + listeners
       enableEditingForRateRow(el, hierarchy);
     }
   });
 }
 
-/* ================= UI INIT (unchanged) ================= */
+/* ================= UI INIT ================= */
 function initBoqUI(allRows, hierarchy) {
   const { depthOf } = hierarchy;
 
@@ -421,14 +441,16 @@ function initBoqUI(allRows, hierarchy) {
     const descCell = r.children[COL.DESC];
     if (!codeCell || !descCell) continue;
 
-    // Indentation
+    // Indentation using CSS custom properties
     if (!isRate(code)) {
       const d = depthOf.get(code) || 0;
-      descCell.style.setProperty("padding-left", `${d * INDENT_PX}px`, "important");
+      descCell.style.setProperty("--indent-level", d);
+      descCell.classList.add("boq-indent");
     } else {
       const base = stripRate(code);
       const pd = depthOf.get(base) || 0;
-      descCell.style.setProperty("padding-left", `${(pd + 1) * INDENT_PX}px`, "important");
+      descCell.style.setProperty("--indent-level", pd + 1);
+      descCell.classList.add("boq-indent");
     }
 
     // Rebuild CODE cell
@@ -439,7 +461,7 @@ function initBoqUI(allRows, hierarchy) {
 
     if (!isRate(code) && hasChildren(code, hierarchy)) {
       const icon = document.createElement("span");
-      icon.textContent = r.classList.contains("expanded") ? "▾" : "▸";
+      icon.textContent = r.classList.contains("expanded") ? CONFIG.EXPAND_ICON : CONFIG.COLLAPSE_ICON;
       icon.className = "text-slate-500";
       wrap.appendChild(icon);
 
@@ -450,12 +472,12 @@ function initBoqUI(allRows, hierarchy) {
         if (isExpanded) {
           r.classList.remove("expanded");
           r.classList.add("collapsed");
-          icon.textContent = "▸";
+          icon.textContent = CONFIG.COLLAPSE_ICON;
           hideSubtree(code, allRows, hierarchy);
         } else {
           r.classList.add("expanded");
           r.classList.remove("collapsed");
-          icon.textContent = "▾";
+          icon.textContent = CONFIG.EXPAND_ICON;
           showImmediateChildren(code, allRows, hierarchy);
         }
       });
@@ -471,23 +493,36 @@ function initBoqUI(allRows, hierarchy) {
   }
 }
 
-/* ================= CSV LOAD (unchanged, with uploaded flags) ================= */
+/* ================= CSV LOAD (with better parsing) ================= */
 function parseCSV(text) {
   const lines = text.trim().split(/\r?\n/);
-  lines.shift();
+  lines.shift(); // Remove header
+  
   return lines
     .filter(l => l.trim().length > 0)
-    .map(l => {
-      const v = l.split(",");
+    .map(line => {
+      // Handle quoted fields with commas
+      const regex = /("([^"]*)"|[^,]+)/g;
+      const values = [];
+      let match;
+      
+      while ((match = regex.exec(line)) !== null) {
+        // If matched group 2 exists, it's a quoted field
+        values.push((match[2] !== undefined ? match[2] : match[1]).trim());
+      }
+      
+      // Pad with empty strings if needed
+      while (values.length < 8) values.push("");
+      
       return {
-        CODE: (v[0] ?? "").trim(),
-        DESCRIPTION: (v[1] ?? "").trim(),
-        QTY: (v[2] ?? "").trim(),
-        UNIT: (v[3] ?? "").trim(),
-        RATE: (v[4] ?? "").trim(),
-        SUBTOTAL: (v[5] ?? "").trim(),
-        MARKUP: (v[6] ?? "").trim(), // FACTOR
-        TOTAL: (v[7] ?? "").trim()
+        CODE: values[0],
+        DESCRIPTION: values[1],
+        QTY: values[2],
+        UNIT: values[3],
+        RATE: values[4],
+        SUBTOTAL: values[5],
+        MARKUP: values[6],
+        TOTAL: values[7]
       };
     });
 }
@@ -501,7 +536,8 @@ function renderFromCSV(data) {
 
   data.forEach(row => {
     const el = document.createElement("div");
-    el.className = "boq-row boq-grid px-3 py-2";
+    // Removed px-3 - now handled by CSS
+    el.className = "boq-row boq-grid py-2";
     el.dataset.code = row.CODE;
 
     // Rate rows stay light blue
@@ -567,7 +603,7 @@ function enableEditingForRateRow(r, hierarchy) {
       ? String(overrides[code].factor)
       : String(factorCell.textContent || "");
 
-  // Inject inputs (sleek)
+  // Inject inputs
   const qtyInput = makeNumericInput(initialQty);
   const rateInput = makeNumericInput(initialRate);
   const factorInput = makeNumericInput(initialFactor);
@@ -604,7 +640,7 @@ function enableEditingForRateRow(r, hierarchy) {
   rateInput.addEventListener("blur", persistAndRefresh);
   factorInput.addEventListener("blur", persistAndRefresh);
 
-  // Enter commits (optional, matches your prior behaviour)
+  // Enter commits
   qtyInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -625,64 +661,90 @@ function enableEditingForRateRow(r, hierarchy) {
   });
 }
 
-/* ================= STAGE 1: enable for all rates currently present ================= */
+/* ================= ENABLE EDITING FOR ALL RATES ================= */
 function enableRateEditing(allRows, hierarchy) {
   for (const r of allRows) {
     enableEditingForRateRow(r, hierarchy);
   }
 }
 
-/* ================= STARTUP (Rails Turbo-safe) ================= */
+/* ================= STARTUP (Rails Turbo-safe with error handling) ================= */
 async function bootBoq() {
   const container = document.getElementById("boqContainer");
   if (!container) return;
 
-  // Prevent double init on the same DOM (Turbo can fire multiple events)
+  // Prevent double init on the same DOM
   if (container.dataset.boqInit === "1") return;
   container.dataset.boqInit = "1";
 
-  const res = await fetch(AUTO_CSV_PATH, { cache: "no-store" });
-  const text = await res.text();
-  const data = parseCSV(text);
+  // Show loading state
+  const loadingDiv = document.createElement('div');
+  loadingDiv.className = 'p-8 text-center text-slate-600';
+  loadingDiv.innerHTML = '<p>Loading BOQ data...</p>';
+  container.appendChild(loadingDiv);
 
-  clearBoq();
-  renderFromCSV(data);
+  try {
+    const res = await fetch(CONFIG.AUTO_CSV_PATH, { cache: "no-store" });
+    
+    if (!res.ok) {
+      throw new Error(`Failed to load CSV: ${res.status} ${res.statusText}`);
+    }
+    
+    const text = await res.text();
+    const data = parseCSV(text);
 
-  const all = rows();
-  const hierarchy = buildHierarchyIndex(all);
+    // Remove loading
+    loadingDiv.remove();
 
-  // Initial visibility: show only root headings; hide all others
-  for (const r of all) {
-    const code = r.dataset.code;
-    if (!code) continue;
+    clearBoq();
+    renderFromCSV(data);
 
-    if (isRate(code)) {
-      r.style.display = "none";
-      continue;
+    const all = rows();
+    const hierarchy = buildHierarchyIndex(all);
+
+    // Initial visibility: show only root headings; hide all others
+    for (const r of all) {
+      const code = r.dataset.code;
+      if (!code) continue;
+
+      if (isRate(code)) {
+        r.style.display = "none";
+        continue;
+      }
+
+      const parent = hierarchy.parentOf.get(code);
+      if (parent === null) {
+        r.style.display = "grid";
+        r.classList.add("collapsed");
+        r.classList.remove("expanded");
+      } else {
+        r.style.display = "none";
+        r.classList.add("collapsed");
+        r.classList.remove("expanded");
+      }
     }
 
-    const parent = hierarchy.parentOf.get(code);
-    if (parent === null) {
-      r.style.display = "grid";
-      r.classList.add("collapsed");
-      r.classList.remove("expanded");
-    } else {
-      r.style.display = "none";
-      r.classList.add("collapsed");
-      r.classList.remove("expanded");
-    }
+    initBoqUI(all, hierarchy);
+
+    // Enable editing (inputs) for all rate rows (even while hidden)
+    enableRateEditing(all, hierarchy);
+
+    // Calculate after overrides
+    applyRowCalculations(all);
+
+    // Rollups after calculations
+    recomputeAllRollups(all, hierarchy);
+
+  } catch (error) {
+    console.error('BOQ load error:', error);
+    loadingDiv.innerHTML = `
+      <div class="text-red-600">
+        <p class="font-bold">Failed to load BOQ data</p>
+        <p class="text-sm">${error.message}</p>
+        <p class="text-sm mt-2">Please ensure boq.csv is in the same directory as this HTML file.</p>
+      </div>
+    `;
   }
-
-  initBoqUI(all, hierarchy);
-
-  // Enable editing (inputs) for all rate rows (even while hidden)
-  enableRateEditing(all, hierarchy);
-
-  // Calculate after overrides
-  applyRowCalculations(all);
-
-  // Rollups after calculations
-  recomputeAllRollups(all, hierarchy);
 }
 
 // Plain static + first load
